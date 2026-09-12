@@ -310,3 +310,175 @@ export function applyRemediationToScenario(scenario, targetNodeId) {
 
   return newScenario;
 }
+
+export function analyzeCustomPolicy(policyName, cloudProvider, policyJson) {
+  let parsed;
+  try {
+    parsed = typeof policyJson === 'string' ? JSON.parse(policyJson) : policyJson;
+  } catch (e) {
+    throw new Error("Invalid JSON");
+  }
+
+  const statements = Array.isArray(parsed.Statement) ? parsed.Statement : (parsed.Statement ? [parsed.Statement] : []);
+  
+  // Base nodes
+  const nodes = [];
+  const edges = [];
+  const attackPath = [];
+  const attackNarrative = [];
+
+  const principalNodeId = 'usr-custom-principal';
+  nodes.push({
+    id: principalNodeId,
+    label: 'Ingress Principal (Caller)',
+    type: 'user',
+    category: 'Custom Ingress',
+    riskScore: 40,
+    riskLevel: 'medium',
+    cloudProvider,
+    details: {
+      principal: 'arn:aws:iam::123456789012:user/custom-api-user',
+      description: 'Caller attempting API requests.'
+    }
+  });
+
+  const policyNodeId = 'policy-custom-uploaded';
+  
+  // Analyze statements for risk
+  let hasWildcardAction = false;
+  let hasPassRole = false;
+  let hasS3Wildcard = false;
+  let hasAdmin = false;
+
+  statements.forEach(s => {
+    if (s.Effect === 'Allow') {
+      const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+      if (actions.includes('*')) { hasWildcardAction = true; hasAdmin = true; }
+      if (actions.includes('iam:PassRole')) hasPassRole = true;
+      if (actions.includes('s3:*')) hasS3Wildcard = true;
+      if (actions.some(a => typeof a === 'string' && a.includes('*') && a !== '*')) hasWildcardAction = true;
+    }
+  });
+
+  let policyRiskScore = 30;
+  if (hasAdmin) policyRiskScore = 98;
+  else if (hasPassRole && hasS3Wildcard) policyRiskScore = 92;
+  else if (hasPassRole || hasS3Wildcard) policyRiskScore = 80;
+  else if (hasWildcardAction) policyRiskScore = 60;
+
+  nodes.push({
+    id: policyNodeId,
+    label: policyName || 'Uploaded Custom Policy',
+    type: 'policy',
+    category: 'Uploaded Policy',
+    riskScore: policyRiskScore,
+    riskLevel: policyRiskScore >= 85 ? 'critical' : (policyRiskScore >= 70 ? 'high' : 'medium'),
+    cloudProvider,
+    details: {
+      statements: statements,
+      description: 'Uploaded raw IAM policy.'
+    }
+  });
+
+  edges.push({ id: 'ec1', source: principalNodeId, target: policyNodeId, label: 'Evaluates Policy', riskType: 'policy' });
+  attackPath.push(principalNodeId);
+  attackPath.push(policyNodeId);
+  attackNarrative.push({
+    step: 1,
+    title: 'Custom Policy Ingestion',
+    description: 'AI Engine identified permissions in the uploaded policy definition.',
+    affectedNode: policyNodeId
+  });
+
+  let stepCount = 2;
+
+  if (hasPassRole || hasAdmin) {
+    const roleId = 'role-target-execution';
+    nodes.push({
+      id: roleId,
+      label: 'Role: TargetExecutionRole',
+      type: 'role',
+      category: 'Target Role',
+      riskScore: 82,
+      riskLevel: 'high',
+      cloudProvider,
+      details: {
+        arn: 'arn:aws:iam::123456789012:role/TargetExecutionRole',
+        description: 'Target privilege role assumed via iam:PassRole or Admin access.'
+      }
+    });
+    edges.push({ id: 'ec2', source: policyNodeId, target: roleId, label: 'Privilege Hop', riskType: 'escalation' });
+    attackPath.push(roleId);
+    attackNarrative.push({
+      step: stepCount++,
+      title: 'Privilege Hop to Target Execution Role',
+      description: 'Permissions allow assuming or passing another high-privileged role.',
+      affectedNode: roleId
+    });
+
+    if (hasS3Wildcard || hasAdmin) {
+      const resId = 'res-target-storage';
+      nodes.push({
+        id: resId,
+        label: 'Cloud Resource: CrownJewelVault',
+        type: 'resource',
+        category: 'Sensitive Data',
+        riskScore: 95,
+        riskLevel: 'critical',
+        cloudProvider,
+        details: {
+          arn: 'arn:aws:s3:::crown-jewel-data-vault',
+          sensitivity: 'CRITICAL',
+          description: 'Sensitive database resource.'
+        }
+      });
+      edges.push({ id: 'ec3', source: roleId, target: resId, label: 'Unchecked Data Access', riskType: 'data-access' });
+      attackPath.push(resId);
+      attackNarrative.push({
+        step: stepCount++,
+        title: 'Vault Access Exfiltration',
+        description: 'Access to Crown Jewel Storage Vault achieved.',
+        affectedNode: resId
+      });
+    }
+  } else if (hasS3Wildcard) {
+    const resId = 'res-target-storage';
+    nodes.push({
+      id: resId,
+      label: 'Cloud Resource: CrownJewelVault',
+      type: 'resource',
+      category: 'Sensitive Data',
+      riskScore: 95,
+      riskLevel: 'critical',
+      cloudProvider,
+      details: {
+        arn: 'arn:aws:s3:::crown-jewel-data-vault',
+        sensitivity: 'CRITICAL',
+        description: 'Sensitive database resource.'
+      }
+    });
+    edges.push({ id: 'ec2', source: policyNodeId, target: resId, label: 'Direct Data Access', riskType: 'data-access' });
+    attackPath.push(resId);
+    attackNarrative.push({
+      step: stepCount++,
+      title: 'Vault Access Exfiltration',
+      description: 'Direct unchecked access to Crown Jewel Storage Vault.',
+      affectedNode: resId
+    });
+  }
+
+  const overallRiskScore = calculateOverallRiskScore(nodes, edges, attackPath);
+
+  return {
+    id: `custom-${Date.now()}`,
+    title: `Custom Policy Analysis: ${policyName}`,
+    description: `Uploaded custom ${cloudProvider} policy containing ${statements.length} statements evaluated by AI Risk Engine.`,
+    cloudProvider,
+    overallRiskScore,
+    nodes,
+    edges,
+    attackPath,
+    attackNarrative
+  };
+}
+

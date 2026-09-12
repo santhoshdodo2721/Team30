@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Upload, FileCode, Sparkles, CheckCircle2, AlertTriangle, ShieldAlert } from 'lucide-react';
-import { calculateNodeRisk } from '../services/riskEngine';
+import { analyzeCustomPolicy } from '../services/riskEngine';
 
 const SAMPLE_CUSTOM_POLICY = `{
   "Version": "2012-10-17",
@@ -46,95 +46,8 @@ export default function PolicyUploader({ onClose, onLoadCustomScenario }) {
       const parsed = JSON.parse(jsonText);
       setError(null);
 
-      // Generate dynamic scenario topology from uploaded policy JSON
-      const customScenario = {
-        id: `custom-${Date.now()}`,
-        title: `Custom Policy Analysis: ${policyName}`,
-        description: `Uploaded custom ${cloudProvider} policy containing ${parsed.Statement?.length || 1} statements evaluated by AI Risk Engine.`,
-        cloudProvider,
-        overallRiskScore: 86,
-        nodes: [
-          {
-            id: 'usr-custom-principal',
-            label: 'Ingress Principal (Caller)',
-            type: 'user',
-            category: 'Custom Ingress',
-            riskScore: 40,
-            riskLevel: 'medium',
-            cloudProvider,
-            details: {
-              principal: 'arn:aws:iam::123456789012:user/custom-api-user',
-              description: 'Caller attempting API requests.'
-            }
-          },
-          {
-            id: 'policy-custom-uploaded',
-            label: policyName,
-            type: 'policy',
-            category: 'Uploaded Policy',
-            riskScore: 92,
-            riskLevel: 'critical',
-            cloudProvider,
-            details: {
-              statements: parsed.Statement || [parsed],
-              description: 'Uploaded raw IAM policy.'
-            }
-          },
-          {
-            id: 'role-target-execution',
-            label: 'Role: TargetExecutionRole',
-            type: 'role',
-            category: 'Target Role',
-            riskScore: 82,
-            riskLevel: 'high',
-            cloudProvider,
-            details: {
-              arn: 'arn:aws:iam::123456789012:role/TargetExecutionRole',
-              description: 'Target privilege role.'
-            }
-          },
-          {
-            id: 'res-target-storage',
-            label: 'Cloud Resource: CrownJewelVault',
-            type: 'resource',
-            category: 'Sensitive Data',
-            riskScore: 95,
-            riskLevel: 'critical',
-            cloudProvider,
-            details: {
-              arn: 'arn:aws:s3:::crown-jewel-data-vault',
-              sensitivity: 'CRITICAL',
-              description: 'Sensitive database resource.'
-            }
-          }
-        ],
-        edges: [
-          { id: 'ec1', source: 'usr-custom-principal', target: 'policy-custom-uploaded', label: 'Evaluates Policy', riskType: 'policy' },
-          { id: 'ec2', source: 'policy-custom-uploaded', target: 'role-target-execution', label: 'iam:PassRole Privilege Hop', riskType: 'escalation' },
-          { id: 'ec3', source: 'role-target-execution', target: 'res-target-storage', label: 'Unchecked Data Access', riskType: 'data-access' }
-        ],
-        attackPath: ['usr-custom-principal', 'policy-custom-uploaded', 'role-target-execution', 'res-target-storage'],
-        attackNarrative: [
-          {
-            step: 1,
-            title: 'Custom Policy Ingestion',
-            description: 'AI Engine identified wildcard actions in uploaded policy definition.',
-            affectedNode: 'policy-custom-uploaded'
-          },
-          {
-            step: 2,
-            title: 'Privilege Hop to Target Execution Role',
-            description: 'Unconstrained iam:PassRole permission permits role assignment.',
-            affectedNode: 'role-target-execution'
-          },
-          {
-            step: 3,
-            title: 'Vault Access Exfiltration',
-            description: 'Access to Crown Jewel Storage Vault achieved.',
-            affectedNode: 'res-target-storage'
-          }
-        ]
-      };
+      // Generate dynamic scenario topology from uploaded policy JSON using the AI Risk Analysis Module
+      const customScenario = analyzeCustomPolicy(policyName, cloudProvider, parsed);
 
       onLoadCustomScenario(customScenario);
       onClose();
